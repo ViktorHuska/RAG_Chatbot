@@ -1,0 +1,9 @@
+langchain
+langchain-text-splitters
+langchain-anthropic
+langchain-chroma
+chromadb
+fastembed
+fastapi
+uvicorn[standard]
+python-dotenv
