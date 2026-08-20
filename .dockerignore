@@ -1,0 +1,9 @@
+# Never in the image: the key, the local venv, local build artefacts.
+.env
+venv/
+data/
+.git/
+__pycache__/
+*.pyc
+.vscode/
+.pytest_cache/
