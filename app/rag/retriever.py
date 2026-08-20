@@ -4,6 +4,7 @@ This is the read side of the pipeline. `ingest.py` writes the index once;
 everything here only reads it.
 """
 
+import logging
 import re
 import threading
 from collections import defaultdict
@@ -14,6 +15,8 @@ from langchain_core.tools import tool
 
 from app.config import CHROMA_DIR, COLLECTION_NAME, TOP_K
 from app.rag.embeddings import LocalEmbeddings
+
+logger = logging.getLogger(__name__)
 
 _store: Chroma | None = None
 _store_lock = threading.Lock()
@@ -265,7 +268,21 @@ def search_handbook(query: str) -> str:
             month" as "work from anywhere", not "business travel". A short
             topic phrase works better than a full question.
     """
-    documents = retrieve(query)
+    try:
+        documents = retrieve(query)
+    except Exception:
+        # A tool exception propagates up through LangGraph and kills the whole
+        # turn — in the server, that is a dead stream for a failure the model
+        # could have talked its way around. Returning a string keeps the turn
+        # alive; the string is written as an instruction because the model is
+        # its reader, and the model's failure mode here would be improvising an
+        # answer without the handbook.
+        logger.exception("handbook search failed for query %r", query)
+        return (
+            "The handbook search is temporarily unavailable. Tell the user you "
+            "could not check the handbook right now and that they should try "
+            "again shortly. Do not answer the question from memory."
+        )
 
     if not documents:
         return "No matching sections found."
