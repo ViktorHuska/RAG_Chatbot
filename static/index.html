@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meridian Handbook Assistant</title>
+<style>
+  /* One file, no dependencies — the page has to work wherever the API does. */
+  :root {
+    --bg: #f7f6f3;
+    --panel: #ffffff;
+    --side: #efede7;
+    --ink: #23211c;
+    --muted: #8a8578;
+    --line: #e4e1d8;
+    --accent: #305f72;
+    --accent-ink: #ffffff;
+    --chip: #eceae2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 15px/1.55 "Georgia", "Times New Roman", serif;
+    background: var(--bg);
+    color: var(--ink);
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+  }
+  .shell {
+    width: min(1040px, 100vw);
+    height: 100vh;
+    display: grid;
+    grid-template-columns: 240px 1fr;
+  }
+  @media (max-width: 700px) { .shell { grid-template-columns: 1fr; } aside { display: none; } }
+
+  /* ---------- sidebar ---------- */
+  aside {
+    background: var(--side);
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  aside .top { padding: 16px 14px 10px; }
+  aside button.new {
+    width: 100%;
+    font: inherit;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--accent);
+    cursor: pointer;
+  }
+  aside button.new:hover { border-color: var(--accent); }
+  #chats { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+  .chat-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13.5px;
+  }
+  .chat-item:hover { background: var(--chip); }
+  .chat-item.active { background: var(--panel); border: 1px solid var(--line); }
+  .chat-item .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-item .who { color: var(--muted); font-size: 11.5px; }
+  .chat-item .del {
+    border: 0; background: none; color: var(--muted); cursor: pointer;
+    font-size: 14px; line-height: 1; padding: 2px 4px; visibility: hidden;
+  }
+  .chat-item:hover .del { visibility: visible; }
+  aside .foot { padding: 10px 14px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--line); }
+
+  /* ---------- main column ---------- */
+  main { display: flex; flex-direction: column; min-height: 0; }
+  header {
+    padding: 18px 20px 12px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header .tagline { color: var(--muted); font-size: 13px; }
+  .persona { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .persona select {
+    font: inherit; padding: 4px 8px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--panel); color: var(--ink);
+  }
+  .persona select:disabled { color: var(--muted); }
+
+  #log { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: 10px; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 3px; }
+  .msg.assistant {
+    align-self: flex-start; background: var(--panel); border: 1px solid var(--line);
+    border-bottom-left-radius: 3px; white-space: pre-wrap;
+  }
+  .msg.assistant strong { color: var(--accent); }
+  .search-chip {
+    align-self: flex-start; font-size: 12.5px; color: var(--muted); background: var(--chip);
+    border-radius: 999px; padding: 3px 12px; font-family: ui-monospace, monospace;
+  }
+  .notice { align-self: center; color: var(--muted); font-size: 13px; text-align: center; }
+
+  .starters { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 20px 10px; }
+  /* The hidden attribute only sets display:none at UA-stylesheet strength, so
+     the display:flex above would beat it. Restate it at author strength. */
+  .starters[hidden] { display: none; }
+  .starters button {
+    font: 13px "Georgia", serif; color: var(--accent); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; cursor: pointer;
+  }
+  .starters button:hover { border-color: var(--accent); }
+
+  form { display: flex; gap: 10px; padding: 14px 20px 18px; border-top: 1px solid var(--line); }
+  form input {
+    flex: 1; font: inherit; padding: 10px 14px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--panel); color: var(--ink);
+  }
+  form input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  form button {
+    font: inherit; padding: 10px 18px; border: 0; border-radius: 8px;
+    background: var(--accent); color: var(--accent-ink); cursor: pointer;
+  }
+  form button:disabled { opacity: .5; cursor: default; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <div class="top"><button class="new" id="new-chat">+ New chat</button></div>
+    <div id="chats"></div>
+    <div class="foot">Chats are stored on the server by id; this list lives in your browser.</div>
+  </aside>
+
+  <main>
+    <header>
+      <h1>Meridian Handbook</h1>
+      <span class="tagline">ask about a 20,000-word policy corpus</span>
+      <label class="persona">
+        asking as
+        <select id="persona"><option value="">anonymous</option></select>
+      </label>
+    </header>
+
+    <div id="log"></div>
+    <div class="starters" id="starters"></div>
+
+    <form id="composer">
+      <input id="box" placeholder="How much PTO do I get?" autocomplete="off" maxlength="4000">
+      <button id="send" type="submit">Send</button>
+    </form>
+  </main>
+</div>
+
+<script>
+"use strict";
+
+const log = document.getElementById("log");
+const box = document.getElementById("box");
+const send = document.getElementById("send");
+const persona = document.getElementById("persona");
+const chatsBox = document.getElementById("chats");
+const startersBox = document.getElementById("starters");
+
+const STARTERS = [
+  "How much PTO do I get?",
+  "What am I paid for being on call?",
+  "Can I fly business class to Singapore?",
+  "My conference ticket was approved — can I book flights?",
+];
+
+// ---------- the chat index ----------
+// The server owns every conversation, addressed by thread id. The browser owns
+// only this index: which ids you have, what to call them, who you were when
+// you started them. Losing it loses the *list*, not the chats — the server
+// still has them, you just no longer know their addresses.
+
+const INDEX_KEY = "meridian.chats";
+let chats = JSON.parse(localStorage.getItem(INDEX_KEY) || "[]");
+let current = null;          // {id, employee_id, title}
+let currentHasTurns = false;
+
+function saveIndex() {
+  chats.sort((a, b) => b.updatedAt - a.updatedAt);
+  localStorage.setItem(INDEX_KEY, JSON.stringify(chats));
+  renderIndex();
+}
+
+function personaLabel(id) {
+  if (!id) return "anonymous";
+  const opt = [...persona.options].find((o) => o.value === id);
+  return opt ? opt.textContent.split(" — ")[0] : id;
+}
+
+function renderIndex() {
+  chatsBox.replaceChildren();
+  for (const c of chats) {
+    const item = el("div", "chat-item" + (current && c.id === current.id ? " active" : ""));
+    const title = el("div", "title", c.title || "New chat");
+    const who = el("div", "who", personaLabel(c.employee_id));
+    const del = el("button", "del", "×");
+    del.title = "Forget this chat";
+    del.addEventListener("click", (e) => { e.stopPropagation(); forgetChat(c.id); });
+    item.append(title, who, del);
+    item.addEventListener("click", () => openChat(c.id));
+    chatsBox.append(item);
+  }
+}
+
+// ---------- rendering ----------
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+// Answers arrive as markdown-ish text. Full markdown is more surface than the
+// demo needs; bold covers what the model actually emits. textContent-first
+// means the model's output is never parsed as HTML.
+function renderAnswer(node, text) {
+  node.textContent = "";
+  const bold = /\*\*([^*]+)\*\*/g;
+  let last = 0, match;
+  while ((match = bold.exec(text)) !== null) {
+    node.append(text.slice(last, match.index));
+    node.append(el("strong", "", match[1]));
+    last = bold.lastIndex;
+  }
+  node.append(text.slice(last));
+}
+
+function addMessage(role, text) {
+  const node = el("div", "msg " + role);
+  if (role === "assistant") renderAnswer(node, text); else node.textContent = text;
+  log.append(node);
+  log.scrollTop = log.scrollHeight;
+  return node;
+}
+
+function addNotice(text) {
+  log.append(el("div", "notice", text));
+  log.scrollTop = log.scrollHeight;
+}
+
+function setHasTurns(v) {
+  currentHasTurns = v;
+  startersBox.hidden = v;
+  // A persona is fixed for the life of a chat: answers already in it were
+  // resolved for that person, and swapping mid-way would make the model read
+  // one employee's entitlements as another's. Start a new chat to switch.
+  persona.disabled = v;
+}
+
+// ---------- chat lifecycle ----------
+
+function newChat() {
+  current = { id: crypto.randomUUID(), employee_id: persona.value || null, title: "" };
+  persona.disabled = false;
+  log.replaceChildren(el("div", "notice",
+    "Answers cite handbook sections like [HR-004 §3.1]. Pick a persona to get answers resolved for one employee."));
+  setHasTurns(false);
+  renderIndex();
+  box.focus();
+}
+
+async function openChat(id) {
+  const entry = chats.find((c) => c.id === id);
+  if (!entry) return;
+  current = { id, employee_id: entry.employee_id, title: entry.title };
+  persona.value = entry.employee_id || "";
+  log.replaceChildren();
+  renderIndex();
+
+  try {
+    const r = await fetch(`/chats/${id}`);
+    if (r.status === 404) {
+      // The index knew an id the server does not — a chat that never got its
+      // first answer, or a store that was reset. Show it empty, not broken.
+      setHasTurns(false);
+      addNotice("This chat is empty.");
+      return;
+    }
+    const turns = await r.json();
+    for (const t of turns) addMessage(t.role, t.content);
+    setHasTurns(turns.length > 0);
+  } catch {
+    addNotice("Could not load this chat — is the server running?");
+  }
+}
+
+function forgetChat(id) {
+  chats = chats.filter((c) => c.id !== id);
+  saveIndex();
+  if (current && current.id === id) newChat();
+}
+
+function touchIndex(firstQuestion) {
+  let entry = chats.find((c) => c.id === current.id);
+  if (!entry) {
+    entry = { id: current.id, employee_id: current.employee_id, title: "", updatedAt: 0 };
+    chats.push(entry);
+  }
+  if (!entry.title && firstQuestion) {
+    entry.title = firstQuestion.length > 48 ? firstQuestion.slice(0, 45) + "…" : firstQuestion;
+  }
+  entry.updatedAt = Date.now();
+  saveIndex();
+}
+
+// ---------- SSE over fetch ----------
+// EventSource cannot POST a body, so the stream is read by hand: buffer the
+// bytes, split on the blank line that ends each event, parse event: and data:.
+
+async function* sseEvents(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let cut;
+    while ((cut = buffer.indexOf("\n\n")) !== -1) {
+      const raw = buffer.slice(0, cut);
+      buffer = buffer.slice(cut + 2);
+      const event = { type: "message", data: "" };
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("event: ")) event.type = line.slice(7);
+        else if (line.startsWith("data: ")) event.data = line.slice(6);
+      }
+      yield { type: event.type, data: JSON.parse(event.data) };
+    }
+  }
+}
+
+// ---------- the turn ----------
+
+async function ask(question) {
+  if (!current) newChat();
+  // The persona is captured at the first message and then frozen with the chat.
+  if (!currentHasTurns) current.employee_id = persona.value || null;
+
+  addMessage("user", question);
+  box.value = "";
+  send.disabled = true;
+  setHasTurns(true);
+
+  let bubble = null;
+  let streamed = "";
+
+  try {
+    const response = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        thread_id: current.id,
+        message: question,
+        employee_id: current.employee_id,
+      }),
+    });
+
+    if (!response.ok) {
+      // 429 and validation errors arrive as ordinary JSON, not a stream.
+      const detail = (await response.json()).detail;
+      addNotice(typeof detail === "string" ? detail : "That message was rejected.");
+      return;
+    }
+
+    touchIndex(question);
+
+    for await (const event of sseEvents(response)) {
+      if (event.type === "search") {
+        log.append(el("div", "search-chip", "searching: " + event.data.query));
+        log.scrollTop = log.scrollHeight;
+        bubble = null;
+      } else if (event.type === "token") {
+        if (!bubble) { bubble = addMessage("assistant", ""); streamed = ""; }
+        streamed += event.data.text;
+        renderAnswer(bubble, streamed);
+        log.scrollTop = log.scrollHeight;
+      } else if (event.type === "done") {
+        // The canonical answer — render from this, not the glued tokens.
+        if (bubble) renderAnswer(bubble, event.data.text);
+        else addMessage("assistant", event.data.text);
+        touchIndex();
+      } else if (event.type === "error") {
+        addNotice(event.data.detail);
+      }
+    }
+  } catch {
+    addNotice("Connection lost — check that the server is running, then retry.");
+  } finally {
+    send.disabled = false;
+    box.focus();
+  }
+}
+
+// ---------- wiring ----------
+
+document.getElementById("composer").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const q = box.value.trim();
+  if (q && !send.disabled) ask(q);
+});
+document.getElementById("new-chat").addEventListener("click", newChat);
+
+for (const q of STARTERS) {
+  const b = el("button", "", q);
+  b.type = "button";
+  b.addEventListener("click", () => ask(q));
+  startersBox.append(b);
+}
+
+fetch("/employees")
+  .then((r) => r.json())
+  .then((people) => {
+    for (const p of people) {
+      const option = document.createElement("option");
+      option.value = p.id;
+      option.textContent = `${p.name} — ${p.location}, ${p.level}`;
+      persona.append(option);
+    }
+    // Personas are known now, so the sidebar can show who each chat was for.
+    if (chats.length) openChat(chats[0].id); else newChat();
+  })
+  .catch(() => {
+    addNotice("Could not load personas — the picker is disabled.");
+    if (chats.length) openChat(chats[0].id); else newChat();
+  });
+</script>
+</body>
+</html>
