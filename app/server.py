@@ -29,7 +29,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, Field
 
 from app.agent import ChatContext, build_agent
-from app.config import BASE_DIR, CHATS_DB, DAILY_TOKEN_BUDGET
+from app.config import BASE_DIR, CHATS_DB, DAILY_TOKEN_BUDGET, MAX_TURNS_PER_CHAT
 from app.employees import list_employees
 
 
@@ -172,6 +172,19 @@ async def chat(request: Request, body: ChatRequest) -> StreamingResponse | JSONR
     agent = request.app.state.agent
     context = ChatContext(employee_id=body.employee_id)
     config = {"configurable": {"thread_id": body.thread_id}}
+
+    # Thread length cap. The checkpointer reloads the whole thread on every
+    # turn and the model re-reads it, so chat cost grows with chat length; this
+    # is the one place that growth gets a ceiling. One cheap SQLite read — the
+    # same one the graph is about to do anyway.
+    state = await agent.aget_state(config)
+    turns = sum(isinstance(m, HumanMessage) for m in state.values.get("messages", []))
+    if turns >= MAX_TURNS_PER_CHAT:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": f"This chat has reached {MAX_TURNS_PER_CHAT} "
+                               "messages. Start a new chat to continue."},
+        )
 
     async def stream():
         # Two stream modes: `messages` for tokens, `updates` for everything

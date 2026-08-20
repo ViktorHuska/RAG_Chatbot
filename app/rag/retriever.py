@@ -13,7 +13,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.tools import tool
 
-from app.config import CHROMA_DIR, COLLECTION_NAME, TOP_K
+from app.config import CHROMA_DIR, COLLECTION_NAME, NEIGHBOUR_HITS, TOP_K
 from app.rag.embeddings import LocalEmbeddings
 
 logger = logging.getLogger(__name__)
@@ -54,8 +54,10 @@ def get_store() -> Chroma:
     return _store
 
 
-def expand_with_neighbours(hits: list[Document]) -> list[Document]:
-    """Add the chunk before and after each hit, from the same document.
+def expand_with_neighbours(
+    hits: list[Document], top: int = NEIGHBOUR_HITS
+) -> list[Document]:
+    """Add the chunk before and after each of the top hits, from the same document.
 
     Search ranks chunks independently, so it will happily return "§8.2 Amounts"
     — a table of relocation lump sums — while leaving "§8.3 Eligibility" behind,
@@ -65,6 +67,11 @@ def expand_with_neighbours(hits: list[Document]) -> list[Document]:
     Handbook documents are written in order: the section that limits a rule sits
     beside the section that states it. Adjacency is a decent proxy for "you need
     to read this too", and checking costs a metadata lookup rather than a search.
+
+    Only the first `top` hits are expanded. Every hit still comes back; the
+    lower-ranked ones just arrive without company. Search rank is a usable
+    signal for "is this on topic", and the neighbours of an off-topic hit are
+    off-topic twice over — paid for in tokens on every turn.
     """
     if not hits:
         return hits
@@ -73,7 +80,7 @@ def expand_with_neighbours(hits: list[Document]) -> list[Document]:
     retrieved = {(hit.metadata["doc_id"], hit.metadata["position"]) for hit in hits}
 
     wanted: dict[str, set[int]] = defaultdict(set)
-    for hit in hits:
+    for hit in hits[:top]:
         doc_id, position = hit.metadata["doc_id"], hit.metadata["position"]
         for neighbour in (position - 1, position + 1):
             # Negative positions do not exist; positions past the end simply
@@ -267,6 +274,12 @@ def search_handbook(query: str) -> str:
             should be searched as "tenure tier"; "working from Spain for a
             month" as "work from anywhere", not "business travel". A short
             topic phrase works better than a full question.
+
+            When the question is about the company itself rather than a policy
+            — how it is owned, where it operates, what it sells — name the
+            company in the query. A bare topic word lands in whichever policy
+            uses that word: "stock price" finds the equity-grant policy, while
+            "Meridian stock price" finds the company overview that answers it.
     """
     try:
         documents = retrieve(query)
