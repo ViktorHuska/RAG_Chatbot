@@ -8,8 +8,13 @@ finds both.
 """
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import ModelRequest, dynamic_prompt
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    ModelRequest,
+    dynamic_prompt,
+)
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, ToolMessage
 from pydantic import BaseModel, Field
 
 # Importing config first also loads .env, which is where ANTHROPIC_API_KEY comes
@@ -54,15 +59,35 @@ claim that requires a search behind it — at least two, in different wording,
 since the phrasing that failed is usually the employee's rather than the
 handbook's. Never decline a question about Meridian without having searched.
 
+That applies hardest to questions that sound like a handbook could not possibly
+answer them. Those are often the ones it answers in a line — how the company is
+owned, which internal system publishes a figure it does not print itself. A
+vague deflection where the handbook had a specific answer is a wrong answer, not
+a safe one.
+
+When you do decline, decline with what you found, and name the internal system
+or role the handbook points to. Never send an employee outside the company — to
+the internet, a financial site, a search engine — for a fact about Meridian.
+
 The handbook describes the company as well as its policies: which legal entities
 exist, where the offices are, how the organisation is structured, what the
 products do. Questions about those are in scope.
 
-If the handbook genuinely does not cover something, say so plainly and suggest
-who to ask.
+Check that a place is covered before applying a rule to it. Wording like
+"globally" or "all employees" describes how far a policy reaches inside the
+company; it is not a list of every country. When the employee names a country,
+office or entity, confirm the handbook mentions it. If the handbook enumerates
+the locations a policy covers and theirs is absent, say the handbook does not
+cover their location — do not hand them the general figure instead.
+
 Do not extrapolate from a similar policy, and do not guess at figures the
-handbook deliberately does not publish, such as individual salary bands. Decline
-requests unrelated to the handbook.
+handbook deliberately does not publish, such as individual salary bands.
+
+Decline requests unrelated to the handbook, and decline them completely. Saying
+a request is out of scope and then fulfilling it anyway is not a decline. If a
+search comes back with nothing that bears on the request, that is your evidence
+it was not a handbook question — say so and stop, rather than answering from
+general knowledge because you happen to know the answer.
 
 Answer in a few sentences where a few sentences will do. Lead with the answer,
 then the conditions attached to it.
@@ -141,6 +166,64 @@ def handbook_prompt(request: ModelRequest) -> str:
     )
 
 
+def searched_this_turn(messages: list) -> bool:
+    """Has a tool already run since the employee's most recent message?
+
+    Walks backwards and stops at the first thing that settles it: a ToolMessage
+    means this turn has searched, a HumanMessage means we reached the start of
+    the turn without finding one. Scanning the whole list would be wrong once a
+    checkpointer is attached — every earlier turn's searches are still in there.
+    """
+    for message in reversed(messages):
+        if isinstance(message, ToolMessage):
+            return True
+        if isinstance(message, HumanMessage):
+            return False
+    return False
+
+
+class RequireSearch(AgentMiddleware):
+    """Make the first model call of every turn choose a tool.
+
+    The system prompt tells the model to search before declining, and measurably
+    it does not: asked for a stock price or a salary band it recognises the
+    shape of the question, decides no handbook could answer it, and declines
+    from memory. Both are wrong — the handbook says the company is privately
+    held, and names the system where bands actually live. The failure is not
+    that the model reasons badly about the results, it is that it never gets
+    any.
+
+    So the guarantee moves out of the prompt and into the graph: until this turn
+    has a ToolMessage in it, the model is not offered the option of answering
+    directly. Once the search has run, the constraint lifts and the model
+    decides for itself whether to search again or answer.
+
+    Cost is one search on turns that would not have searched, which for a
+    handbook assistant is close to none — and buys a guarantee that no answer
+    about Meridian is ever produced without having looked.
+
+    Written as a class rather than a `@wrap_model_call` function because the
+    decorator registers only the hook matching the function it wrapped: a sync
+    function leaves `awrap_model_call` unimplemented, and the server calls
+    `astream`. Both paths are live here — the eval scripts are sync, the server
+    is async — so both hooks have to exist.
+    """
+
+    @staticmethod
+    def _forced(request: ModelRequest) -> ModelRequest:
+        if searched_this_turn(request.messages):
+            return request
+        # "any" rather than naming the tool: there is one tool today, and this
+        # stays correct if a second is ever added.
+        return request.override(tool_choice="any")
+
+    def wrap_model_call(self, request, handler):
+        return handler(self._forced(request))
+
+    async def awrap_model_call(self, request, handler):
+        return await handler(self._forced(request))
+
+
 def build_agent(checkpointer=None):
     """Wire the model, the tool, and the prompt middleware into one agent.
 
@@ -196,7 +279,7 @@ def build_agent(checkpointer=None):
         tools=[search_handbook],
         # The middleware supplies the system prompt, so there is no static
         # `system_prompt=` here — passing both would be ambiguous.
-        middleware=[handbook_prompt],
+        middleware=[handbook_prompt, RequireSearch()],
         context_schema=ChatContext,
         checkpointer=checkpointer,
     )

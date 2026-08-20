@@ -97,8 +97,14 @@ CASES = [
         "question": "How many PTO days can I carry into next year, and when do "
                     "they expire?",
         "expect": [["HR-004 4.2", "POL-000 3.1"]],
-        "answer": "10 days, expiring 30 June. Must NOT say 5 days expiring "
-                  "31 March — that is the superseded figure.",
+        "answer": "10 days, expiring 30 June, for the US, Canada and Singapore "
+                  "entitlements. Must NOT present '5 days expiring 31 March' as "
+                  "the current rule for those countries — that figure was "
+                  "superseded on 1 January 2026. Naming Ireland's separate "
+                  "5-day/31 March carryover under HR-004 §4.3, attributed to "
+                  "Ireland, is correct and must not be marked wrong: the same "
+                  "numbers are both the superseded figure and a live rule "
+                  "elsewhere, and telling them apart is the point of the case.",
     },
     {
         "question": "What's the meal per diem for a trip to London?",

@@ -29,6 +29,7 @@ them), as each stage of the pipeline was added:
 | + neighbour expansion                      | 18 / 22                    | 32 / 36             | 7.1k               |
 | + reference following                      | 20 / 22                    | 34 / 36             | 8.3k               |
 | + hits-only references, round-robin budget | **22 / 22**                | **36 / 36**         | 8.2k               |
+| + neighbours for the top 4 hits only       | **22 / 22**                | **36 / 36**         | **6.6k**           |
 
 Answers, graded by Claude Opus 4.6 against a written answer key
 (`scripts/evaluate_answers.py`):
@@ -38,13 +39,29 @@ Answers, graded by Claude Opus 4.6 against a written answer key
 | Correct                              | 21 / 22     |
 | Grounded in retrieved text           | 21 / 22     |
 | Cited correctly                      | 22 / 22     |
-| Fully passed (all three)             | 20 / 22     |
-| Correctly declined (out-of-scope)    | **2 / 5**   |
+| Fully passed (all three)             | 21 / 22     |
+| Correctly declined (out-of-scope)    | **3 / 5**   |
 
-The refusal score is the honest weak spot: asked about parental leave in a
-country the company has no entity in, the model still tends to answer from the
-global policy rather than check whether the country exists. Retrieval is clean;
-refusal discipline on a small model is the open problem.
+Refusal is still the weak column, and the way it moved is the more interesting
+result. It started at 2/5. Rewriting the system prompt to insist on searching
+before declining changed nothing — measured, not assumed. The diagnosis was
+that on questions that *sound* un-handbook-like (a stock price, a salary band)
+the model never called the tool at all: it recognised the shape of the question
+and declined from memory, so it missed that the handbook names Workday and says
+the company is privately held.
+
+The fix was to stop asking. A middleware now forces a tool call on the first
+model call of every turn, so no answer about Meridian is produced without
+having looked. That plus a rule against half-declining ("this is out of scope,
+but here's the answer anyway") took it to 3/5.
+
+The two that remain are honest failures, and they are not the same bug:
+asked about parental leave in Brazil the model recites the global policy
+instead of noticing the country is never mentioned — reasoning from the
+*absence* of evidence, which is genuinely hard. And asked for a stock price it
+searches "equity" and lands in the equity-grant policy, when "Meridian stock
+price" would have retrieved the sentence saying the company is privately held.
+Retrieval can find it; the model picks the wrong query.
 
 ---
 
@@ -108,9 +125,11 @@ Embedding search alone ranks chunks in isolation, so it will happily return
 "§8.2 Relocation Amounts" without "§8.3 Eligibility" beside it. Two expansions
 add what the corpus itself says belongs alongside a hit:
 
-- **Neighbour expansion** fetches the chunk before and after each hit by
-  `(doc_id, position)`. Policy documents are written in order; the section
-  that limits a rule sits next to the one that states it.
+- **Neighbour expansion** fetches the chunk before and after each of the top
+  4 hits by `(doc_id, position)`. Policy documents are written in order; the
+  section that limits a rule sits next to the one that states it. Lower hits
+  still come back, just without neighbours — expanding all 8 cost 20% more
+  context for zero extra recall.
 - **Reference following** regexes citations like `HR-001 §4.3` out of the
   hits and fetches those sections by label. References are collected from the
   search hits only — not from neighbours, whose §1.x boilerplate cites half
@@ -118,7 +137,9 @@ add what the corpus itself says belongs alongside a hit:
   starved by a broad `§5` collected before it.
 
 Neither step uses embeddings; both are metadata lookups, effectively free.
-Together they took retrieval from 18/22 to 22/22 at unchanged context size.
+Together they took retrieval from 18/22 to 22/22, and after trimming which
+hits get expanded, at *less* context than embedding search plus neighbours
+alone.
 
 ### Agent (`app/agent.py`)
 
@@ -126,6 +147,13 @@ Together they took retrieval from 18/22 to 22/22 at unchanged context size.
 it tells the model to search in the handbook's vocabulary, not the employee's,
 and to search again when a result points at something unread. The system
 prompt sets the citation and refusal behaviour and is kept corpus-independent.
+
+A second middleware (`RequireSearch`) forces a tool call on the first model
+call of each turn, lifting the constraint once the turn has a `ToolMessage` in
+it. It exists because the prompt could not get the model to search before
+declining — see the refusal discussion above. Both the sync and async hooks are
+implemented: the eval scripts call `invoke`, the server calls `astream`, and
+the decorator form registers only whichever one it wrapped.
 
 Per-employee answers use LangGraph's `context_schema` plus a `@dynamic_prompt`
 middleware: one agent, built once; who is asking arrives per invocation and
@@ -146,9 +174,13 @@ thread per chat. The browser keeps only an index of thread ids in
 Reopening a chat reads the graph's own state (`GET /chats/{id}`), so there is
 no second copy to drift.
 
+A chat is capped at 30 turns (HTTP 409, "start a new chat") because every
+turn re-sends the whole thread to the model — cost grows with length, so
+length gets a ceiling.
+
 Trade-offs, stated: the server is stateful (single-instance unless stores are
-shared); thread ids are unguessable 122-bit UUIDs but not bound to a user; a
-thread can grow without bound. Right for a demo, all three named in the code.
+shared), and thread ids are unguessable 122-bit UUIDs but not bound to a
+user. Right for a demo, both named in the code.
 
 ### Server and UI
 
@@ -196,6 +228,40 @@ The persona demo in two clicks: pick **John Doe (Dublin)**, ask *"What am I
 paid for being on call?"* — 12% of weekly base. New chat, **Alex Smith
 (Austin)**, same question — USD 500.
 
+### Deploying
+
+One `Dockerfile`, host-agnostic — the port comes from `$PORT` where the
+platform sets one. The index is built *into the image*, so a container start is
+seconds and the running app talks to nothing but the Anthropic API.
+
+```bash
+docker build -t meridian .
+docker run --rm -p 7860:7860 --env-file .env meridian     # http://127.0.0.1:7860
+```
+
+Measured on that image: 416 MB resident at boot, 455 MB after three questions.
+It survives a hard `--memory=512m` cap, which is what makes the small free
+tiers viable at all.
+
+Deployed on **Google Cloud Run**, scale-to-zero, with the API key in Secret
+Manager:
+
+```bash
+gcloud run deploy meridian --source . \
+  --region europe-west1 --allow-unauthenticated \
+  --memory 1Gi --cpu 1 --max-instances 1 \
+  --set-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest
+```
+
+`--max-instances 1` is a correctness constraint, not a cost one: chat history
+is a SQLite file inside the container, so a second instance would be a second
+history. 1 GiB rather than 512 MiB because Cloud Run's writable filesystem is
+in-memory — `chats.db` is charged against RAM.
+
+Caveats, stated: the container sleeps when idle (~15s cold start, mostly
+loading the embedding model) and its disk is ephemeral, so `chats.db` resets
+when it does. The UI says so.
+
 ---
 
 ## Layout
@@ -204,11 +270,11 @@ paid for being on call?"* — 12% of weekly base. New chat, **Alex Smith
 corpus/            16 handbook documents (the only thing that gets indexed)
 tests/             eval_cases.py — 27 graded questions with answer key; never indexed
 app/
-  config.py        paths, models, budget
+  config.py        paths, models, budgets and caps
   rag/ingest.py    markdown → chunks → Chroma
   rag/retriever.py search + neighbours + references; the search_handbook tool
   rag/embeddings.py fastembed adapter for LangChain
-  agent.py         create_agent, persona middleware, prompt caching
+  agent.py         create_agent, persona + forced-search middleware, caching
   employees.py     persona table (SQLite)
   server.py        FastAPI, SSE, checkpointer, budget
 scripts/
@@ -226,14 +292,12 @@ static/index.html  the chat UI
 In order of expected return, each one measured against the eval before it
 stays:
 
-1. **Expand fewer hits** — neighbours for the top 3–4 only; likely holds 22/22
-   at ~40% less context.
-2. **Reranker before expansion** — retrieve 30, `bge-reranker-base` locally,
+1. **Reranker before expansion** — retrieve 30, `bge-reranker-base` locally,
    keep 6, then expand; stops expansion multiplying junk.
-3. **Contextual retrieval** — one Haiku call per chunk at index time writing a
+2. **Contextual retrieval** — one Haiku call per chunk at index time writing a
    situating sentence, so caveats live inside the vector. Would have
    prevented the §8.2/§8.3 failure class outright.
-4. **Hybrid BM25 + RRF** — exact-identifier queries (`HR-004 §4.2`,
+3. **Hybrid BM25 + RRF** — exact-identifier queries (`HR-004 §4.2`,
    `USD 110`) where embeddings are weakest.
-5. **Cap thread growth** and bind threads to an authenticated user before any
-   non-demo deployment.
+4. **Bind threads to an authenticated user** before any non-demo deployment;
+   today knowing a thread id is owning it.
