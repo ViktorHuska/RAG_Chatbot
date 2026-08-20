@@ -12,6 +12,11 @@ COLLECTION_NAME = "handbook"
 # disposable like the Chroma index — none of it is real personal data.
 EMPLOYEE_DB = BASE_DIR / "data" / "employees.db"
 
+# Conversation persistence (LangGraph checkpoints, one thread per chat). Unlike
+# the two databases above this one is real user state — deleting it deletes
+# everyone's chat history, so it is not rebuild-on-boot.
+CHATS_DB = BASE_DIR / "data" / "chats.db"
+
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 150
 # 8 rather than 5: many handbook questions need chunks from two or three
@@ -24,6 +29,12 @@ CHAT_MODEL = "claude-haiku-4-5"
 # CHAT_MODEL — a judge no smarter than what it grades tends to agree with it.
 # Never used at request time, so this costs per eval run, not per user.
 JUDGE_MODEL = "claude-opus-4-6"
+
+# Per-IP daily ceiling for the public demo, in model tokens (input + output,
+# cached included). 300k is roughly 30-40 questions — plenty to try the demo,
+# not enough to make farming the endpoint worthwhile. Worst case per IP per day
+# at Haiku prices is a few tenths of a dollar.
+DAILY_TOKEN_BUDGET = 300_000
 
 # 768 dimensions. Roughly 5x the parameters of all-MiniLM-L6-v2 (384 dims) and
 # noticeably better at retrieval, still small enough to run on CPU via ONNX.

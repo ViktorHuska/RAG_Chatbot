@@ -141,12 +141,27 @@ def handbook_prompt(request: ModelRequest) -> str:
     )
 
 
-def build_agent():
+def build_agent(checkpointer=None):
     """Wire the model, the tool, and the prompt middleware into one agent.
 
     Built once per process. Who is asking arrives per invocation:
 
         agent.invoke({"messages": [...]}, context=ChatContext(employee_id="jdoe"))
+
+    With a `checkpointer`, the graph saves its state after every step, keyed by
+    the thread_id in the invocation config — send one new message and the rest
+    of the conversation is loaded from the store:
+
+        agent.invoke(
+            {"messages": [new_message]},
+            config={"configurable": {"thread_id": chat_id}},
+            context=ChatContext(employee_id="jdoe"),
+        )
+
+    Without one (the default), nothing persists and callers pass full history
+    each time. The CLI and both eval scripts rely on that: evaluation cases
+    must not remember each other, so statelessness there is a requirement, not
+    a shortcut.
     """
     # Open the index here rather than on the first search. It moves the embedding
     # model's load time to startup where it is expected, and keeps construction
@@ -183,4 +198,5 @@ def build_agent():
         # `system_prompt=` here — passing both would be ambiguous.
         middleware=[handbook_prompt],
         context_schema=ChatContext,
+        checkpointer=checkpointer,
     )

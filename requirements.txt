@@ -1,5 +1,6 @@
 langchain
 langchain-text-splitters
+langgraph-checkpoint-sqlite
 langchain-anthropic
 langchain-chroma
 chromadb
