@@ -1,9 +1,10 @@
-# Image for the public demo (Hugging Face Spaces, Docker SDK). Same image runs
-# on Fly.io, Render, or a VPS — only the port number is Spaces-specific.
+# Image for the public demo, deployed on Google Cloud Run. Nothing in here is
+# Cloud Run specific: the port is read from $PORT at the bottom, so the same
+# image runs on Render, Fly.io, a VPS, or plain `docker run`.
 
 FROM python:3.13-slim
 
-# Spaces run the container as uid 1000. Build as that user too, so everything
+# Run as a non-root uid. Build as that same user, so everything
 # written at build time — the Chroma index, the employee DB, the embedding
 # model cache — is owned by the same user that writes chats.db at runtime.
 RUN useradd -m -u 1000 user
@@ -12,6 +13,13 @@ ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH \
     PYTHONUNBUFFERED=1
 
+# Create the working directory explicitly, as `user`, before WORKDIR points at
+# it. A missing WORKDIR is created by the builder: BuildKit makes it owned by
+# the current USER, but the classic builder (which Cloud Build uses) makes it
+# root-owned — and then the index step below cannot create data/ inside it.
+# Doing it here is builder-independent, and it is why this built locally but
+# failed in Cloud Build.
+RUN mkdir -p /home/user/app/data
 WORKDIR /home/user/app
 
 # Dependencies first, on their own layer: editing code does not reinstall them.
